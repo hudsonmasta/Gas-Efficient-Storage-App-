@@ -10,6 +10,8 @@ A Clarity smart contract demonstrating gas optimization best practices for effic
 - **📊 Usage Analytics**: Track storage statistics and access patterns
 - **🔍 Efficient Indexing**: Fast data retrieval with optimized indexing system
 - **💡 Smart Optimization**: Convert existing data to compressed format
+- **⏰ Storage Expiration**: Time-based data expiration prevents blockchain bloat
+- **🧹 Cleanup Rewards**: Earn rewards for cleaning up expired storage
 
 ## 🎯 Gas Optimization Techniques
 
@@ -27,12 +29,13 @@ This contract demonstrates several key optimization strategies:
 
 #### `store-data`
 ```clarity
-(store-data data-hash size compress)
+(store-data data-hash size compress expiration-blocks)
 ```
-Store data with optional compression.
+Store data with optional compression and expiration.
 - **data-hash**: SHA256 hash of your data
 - **size**: Size in bytes
 - **compress**: Enable compression (recommended for size > 1KB)
+- **expiration-blocks**: Number of blocks until expiration (0 = default)
 
 #### `batch-store-data`
 ```clarity
@@ -57,6 +60,18 @@ Delete stored data and reclaim storage space.
 (optimize-storage storage-id)
 ```
 Convert existing uncompressed data to compressed format.
+
+#### `extend-expiration`
+```clarity
+(extend-expiration storage-id additional-blocks)
+```
+Extend storage expiration time for additional cost.
+
+#### `cleanup-expired-storage`
+```clarity
+(cleanup-expired-storage storage-id)
+```
+Clean up expired storage and earn rewards (anyone can call).
 
 ### 📈 Analytics Functions
 
@@ -83,17 +98,30 @@ Calculate storage cost before storing data.
 (calculate-batch-quote data-items)
 ```
 Calculate batch operation costs with discount information.
-- **data-items**: List of {size: uint, compress: bool} items
+- **data-items**: List of {size: uint, compress: bool, expiration-blocks: uint} items
+
+#### `get-expiration-info`
+```clarity
+(get-expiration-info storage-id)
+```
+Get expiration details for stored data.
+
+#### `get-cleanup-reward-estimate`
+```clarity
+(get-cleanup-reward-estimate storage-id)
+```
+Calculate potential cleanup reward for expired storage.
 
 ## 💻 Usage Examples
 
 ### Basic Storage
 ```clarity
-;; Store 1KB of data with compression
+;; Store 1KB of data with compression, expires in 1008 blocks (~1 week)
 (contract-call? .gas-efficient-storage-app store-data 
   0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef 
   u1024 
-  true)
+  true
+  u1008)
 ```
 
 ### Batch Storage
@@ -101,10 +129,16 @@ Calculate batch operation costs with discount information.
 ;; Store multiple items with batch discount
 (contract-call? .gas-efficient-storage-app batch-store-data 
   (list 
-    {data-hash: 0x1111..., size: u500, compress: true}
-    {data-hash: 0x2222..., size: u800, compress: true}
-    {data-hash: 0x3333..., size: u1200, compress: true}
+    {data-hash: 0x1111..., size: u500, compress: true, expiration-blocks: u1008}
+    {data-hash: 0x2222..., size: u800, compress: true, expiration-blocks: u2016}
+    {data-hash: 0x3333..., size: u1200, compress: true, expiration-blocks: u504}
   ))
+```
+
+### Cleanup Expired Storage
+```clarity
+;; Earn rewards by cleaning up expired storage
+(contract-call? .gas-efficient-storage-app cleanup-expired-storage u123)
 ```
 
 ### Get Storage Quote
@@ -120,6 +154,8 @@ Calculate batch operation costs with discount information.
 - **Compression Savings**: 20% cost reduction
 - **Batch Discount**: 20% off for 5+ operations
 - **Maximum Entries**: 10,000 storage slots
+- **Default Expiration**: 1008 blocks (~1 week)
+- **Cleanup Reward**: 50% of original storage cost
 
 ### Compression Ratios
 - **Large files (>1KB)**: 40% compression
