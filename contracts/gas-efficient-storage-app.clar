@@ -7,6 +7,8 @@
 (define-constant ERR-INSUFFICIENT-PAYMENT (err u402))
 (define-constant ERR-NOT-EXPIRED (err u403))
 (define-constant ERR-ALREADY-CLAIMED (err u410))
+(define-constant ERR-ACCESS-DENIED (err u411))
+(define-constant ERR-PERMISSION-EXISTS (err u412))
 
 (define-constant MAX-STORAGE-ENTRIES u10000)
 (define-constant STORAGE-COST-PER-BYTE u10)
@@ -14,6 +16,9 @@
 (define-constant BATCH-DISCOUNT-RATE u20)
 (define-constant DEFAULT-EXPIRATION-BLOCKS u1008)
 (define-constant CLEANUP-REWARD-RATE u50)
+(define-constant PERMISSION-PRIVATE u0)
+(define-constant PERMISSION-PUBLIC u1)
+(define-constant PERMISSION-SHARED u2)
 
 (define-data-var storage-counter uint u0)
 (define-data-var total-storage-used uint u0)
@@ -71,6 +76,16 @@
   { claimer: principal, claim-block: uint }
 )
 
+(define-map storage-permissions
+  { storage-id: uint }
+  { permission-type: uint, is-public: bool }
+)
+
+(define-map storage-access-grants
+  { storage-id: uint, grantee: principal }
+  { granted-by: principal, grant-block: uint, is-active: bool }
+)
+
 (define-private (calculate-storage-cost (size uint) (is-compressed bool))
   (let ((base-cost (* size STORAGE-COST-PER-BYTE)))
     (if is-compressed
@@ -99,13 +114,14 @@
   (let ((compression-ratio (if (> original-size u1000) u60 u80)))
     (/ (* original-size compression-ratio) u100)))
 
-(define-public (store-data (data-hash (buff 32)) (size uint) (compress bool) (expiration-blocks uint))
+(define-public (store-data (data-hash (buff 32)) (size uint) (compress bool) (expiration-blocks uint) (permission-type uint))
   (let ((storage-id (+ (var-get storage-counter) u1))
         (compressed-size (if compress (compress-data size) size))
         (storage-cost (calculate-storage-cost compressed-size compress)))
     (asserts! (< (var-get storage-counter) MAX-STORAGE-ENTRIES) ERR-STORAGE-FULL)
     (asserts! (> size u0) ERR-INVALID-INPUT)
     (asserts! (> expiration-blocks u0) ERR-INVALID-INPUT)
+    (asserts! (<= permission-type PERMISSION-SHARED) ERR-INVALID-INPUT)
     (asserts! (is-none (map-get? storage-entries { storage-id: storage-id })) ERR-ALREADY-EXISTS)
     
     (try! (stx-transfer? storage-cost tx-sender (as-contract tx-sender)))
@@ -142,9 +158,13 @@
       (var-set contract-balance (+ (var-get contract-balance) net-contract-balance))
       (var-set cleanup-rewards-pool (+ (var-get cleanup-rewards-pool) cleanup-reward)))
     
+    (map-set storage-permissions
+      { storage-id: storage-id }
+      { permission-type: permission-type, is-public: (is-eq permission-type PERMISSION-PUBLIC) })
+    
     (ok storage-id)))
 
-(define-public (batch-store-data (data-list (list 10 { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint })))
+(define-public (batch-store-data (data-list (list 10 { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint, permission-type: uint })))
   (let ((batch-id (+ (var-get batch-counter) u1))
         (operation-count (len data-list))
         (total-cost (fold + (map calculate-individual-cost data-list) u0))
@@ -178,17 +198,18 @@
       (var-set batch-counter batch-id)
       (ok batch-id))))
 
-(define-private (calculate-individual-cost (data-item { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint }))
+(define-private (calculate-individual-cost (data-item { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint, permission-type: uint }))
   (let ((size (get size data-item))
         (compress (get compress data-item)))
     (calculate-storage-cost (if compress (compress-data size) size) compress)))
 
-(define-private (store-single-data (data-item { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint }))
+(define-private (store-single-data (data-item { data-hash: (buff 32), size: uint, compress: bool, expiration-blocks: uint, permission-type: uint }))
   (let ((storage-id (+ (var-get storage-counter) u1))
         (data-hash (get data-hash data-item))
         (size (get size data-item))
         (compress (get compress data-item))
         (expiration-blocks (get expiration-blocks data-item))
+        (permission-type (get permission-type data-item))
         (compressed-size (if compress (compress-data size) size)))
     
     (map-set storage-entries 
@@ -218,11 +239,28 @@
     (var-set storage-counter storage-id)
     (var-set total-storage-used (+ (var-get total-storage-used) compressed-size))
     
+    (map-set storage-permissions
+      { storage-id: storage-id }
+      { permission-type: permission-type, is-public: (is-eq permission-type PERMISSION-PUBLIC) })
+    
     storage-id))
+
+(define-private (has-storage-access (storage-id uint) (user principal))
+  (let ((entry (map-get? storage-entries { storage-id: storage-id }))
+        (permissions (map-get? storage-permissions { storage-id: storage-id })))
+    (if (and (is-some entry) (is-some permissions))
+      (let ((storage-entry (unwrap-panic entry))
+            (permission-info (unwrap-panic permissions)))
+        (or
+          (is-eq (get owner storage-entry) user)
+          (get is-public permission-info)
+          (and (is-eq (get permission-type permission-info) PERMISSION-SHARED)
+               (is-some (map-get? storage-access-grants { storage-id: storage-id, grantee: user })))))
+      false)))
 
 (define-public (retrieve-data (storage-id uint))
   (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND)))
-    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (has-storage-access storage-id tx-sender) ERR-ACCESS-DENIED)
     
     (map-set storage-entries 
       { storage-id: storage-id }
@@ -291,7 +329,7 @@
 (define-read-only (calculate-storage-quote (size uint) (compress bool))
   (calculate-storage-cost (if compress (compress-data size) size) compress))
 
-(define-read-only (calculate-batch-quote (data-items (list 10 { size: uint, compress: bool, expiration-blocks: uint })))
+(define-read-only (calculate-batch-quote (data-items (list 10 { size: uint, compress: bool, expiration-blocks: uint, permission-type: uint })))
   (let ((individual-costs (map calculate-quote-item data-items))
         (total-cost (fold + individual-costs u0))
         (operation-count (len data-items)))
@@ -302,7 +340,7 @@
       savings: (- total-cost (calculate-batch-discount operation-count total-cost))
     }))
 
-(define-private (calculate-quote-item (data-item { size: uint, compress: bool, expiration-blocks: uint }))
+(define-private (calculate-quote-item (data-item { size: uint, compress: bool, expiration-blocks: uint, permission-type: uint }))
   (let ((size (get size data-item))
         (compress (get compress data-item)))
     (calculate-storage-cost (if compress (compress-data size) size) compress)))
@@ -370,6 +408,48 @@
 
 (define-read-only (get-cleanup-pool-balance)
   (var-get cleanup-rewards-pool))
+
+(define-public (grant-storage-access (storage-id uint) (grantee principal))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND))
+        (permissions (unwrap! (map-get? storage-permissions { storage-id: storage-id }) ERR-NOT-FOUND)))
+    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (get permission-type permissions) PERMISSION-SHARED) ERR-ACCESS-DENIED)
+    (asserts! (is-none (map-get? storage-access-grants { storage-id: storage-id, grantee: grantee })) ERR-PERMISSION-EXISTS)
+    
+    (map-set storage-access-grants
+      { storage-id: storage-id, grantee: grantee }
+      { granted-by: tx-sender, grant-block: stacks-block-height, is-active: true })
+    
+    (ok true)))
+
+(define-public (revoke-storage-access (storage-id uint) (grantee principal))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND))
+        (grant (unwrap! (map-get? storage-access-grants { storage-id: storage-id, grantee: grantee }) ERR-NOT-FOUND)))
+    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    
+    (map-delete storage-access-grants { storage-id: storage-id, grantee: grantee })
+    
+    (ok true)))
+
+(define-public (update-storage-permissions (storage-id uint) (new-permission-type uint))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND)))
+    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (<= new-permission-type PERMISSION-SHARED) ERR-INVALID-INPUT)
+    
+    (map-set storage-permissions
+      { storage-id: storage-id }
+      { permission-type: new-permission-type, is-public: (is-eq new-permission-type PERMISSION-PUBLIC) })
+    
+    (ok true)))
+
+(define-read-only (get-storage-permissions (storage-id uint))
+  (map-get? storage-permissions { storage-id: storage-id }))
+
+(define-read-only (get-storage-access-grant (storage-id uint) (grantee principal))
+  (map-get? storage-access-grants { storage-id: storage-id, grantee: grantee }))
+
+(define-read-only (check-storage-access (storage-id uint) (user principal))
+  (has-storage-access storage-id user))
 
 (define-public (withdraw-fees)
   (begin

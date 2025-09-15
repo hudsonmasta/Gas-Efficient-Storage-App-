@@ -12,6 +12,8 @@ A Clarity smart contract demonstrating gas optimization best practices for effic
 - **💡 Smart Optimization**: Convert existing data to compressed format
 - **⏰ Storage Expiration**: Time-based data expiration prevents blockchain bloat
 - **🧹 Cleanup Rewards**: Earn rewards for cleaning up expired storage
+- **🔐 Access Control**: Granular permissions for private, public, and shared storage
+- **👥 Multi-User Access**: Collaborative data sharing with permission management
 
 ## 🎯 Gas Optimization Techniques
 
@@ -29,13 +31,14 @@ This contract demonstrates several key optimization strategies:
 
 #### `store-data`
 ```clarity
-(store-data data-hash size compress expiration-blocks)
+(store-data data-hash size compress expiration-blocks permission-type)
 ```
-Store data with optional compression and expiration.
+Store data with compression, expiration, and access control.
 - **data-hash**: SHA256 hash of your data
 - **size**: Size in bytes
 - **compress**: Enable compression (recommended for size > 1KB)
 - **expiration-blocks**: Number of blocks until expiration (0 = default)
+- **permission-type**: Access level (0=private, 1=public, 2=shared)
 
 #### `batch-store-data`
 ```clarity
@@ -73,6 +76,24 @@ Extend storage expiration time for additional cost.
 ```
 Clean up expired storage and earn rewards (anyone can call).
 
+#### `grant-storage-access`
+```clarity
+(grant-storage-access storage-id grantee)
+```
+Grant access to shared storage (owner only).
+
+#### `revoke-storage-access`
+```clarity
+(revoke-storage-access storage-id grantee)
+```
+Revoke access from shared storage (owner only).
+
+#### `update-storage-permissions`
+```clarity
+(update-storage-permissions storage-id new-permission-type)
+```
+Update storage access permissions (owner only).
+
 ### 📈 Analytics Functions
 
 #### `get-user-stats`
@@ -98,7 +119,19 @@ Calculate storage cost before storing data.
 (calculate-batch-quote data-items)
 ```
 Calculate batch operation costs with discount information.
-- **data-items**: List of {size: uint, compress: bool, expiration-blocks: uint} items
+- **data-items**: List of {size: uint, compress: bool, expiration-blocks: uint, permission-type: uint} items
+
+#### `get-storage-permissions`
+```clarity
+(get-storage-permissions storage-id)
+```
+Get storage access permissions and settings.
+
+#### `check-storage-access`
+```clarity
+(check-storage-access storage-id user)
+```
+Check if a user has access to specific storage.
 
 #### `get-expiration-info`
 ```clarity
@@ -116,12 +149,13 @@ Calculate potential cleanup reward for expired storage.
 
 ### Basic Storage
 ```clarity
-;; Store 1KB of data with compression, expires in 1008 blocks (~1 week)
+;; Store 1KB of private data with compression, expires in 1008 blocks (~1 week)
 (contract-call? .gas-efficient-storage-app store-data 
   0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef 
   u1024 
   true
-  u1008)
+  u1008
+  u0)  ;; private storage
 ```
 
 ### Batch Storage
@@ -129,10 +163,19 @@ Calculate potential cleanup reward for expired storage.
 ;; Store multiple items with batch discount
 (contract-call? .gas-efficient-storage-app batch-store-data 
   (list 
-    {data-hash: 0x1111..., size: u500, compress: true, expiration-blocks: u1008}
-    {data-hash: 0x2222..., size: u800, compress: true, expiration-blocks: u2016}
-    {data-hash: 0x3333..., size: u1200, compress: true, expiration-blocks: u504}
+    {data-hash: 0x1111..., size: u500, compress: true, expiration-blocks: u1008, permission-type: u0}
+    {data-hash: 0x2222..., size: u800, compress: true, expiration-blocks: u2016, permission-type: u1}
+    {data-hash: 0x3333..., size: u1200, compress: true, expiration-blocks: u504, permission-type: u2}
   ))
+```
+
+### Access Control Management
+```clarity
+;; Grant access to shared storage
+(contract-call? .gas-efficient-storage-app grant-storage-access u123 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR)
+
+;; Check if user has access
+(contract-call? .gas-efficient-storage-app check-storage-access u123 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR)
 ```
 
 ### Cleanup Expired Storage
