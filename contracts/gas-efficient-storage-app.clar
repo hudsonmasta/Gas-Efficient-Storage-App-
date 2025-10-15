@@ -9,6 +9,8 @@
 (define-constant ERR-ALREADY-CLAIMED (err u410))
 (define-constant ERR-ACCESS-DENIED (err u411))
 (define-constant ERR-PERMISSION-EXISTS (err u412))
+(define-constant ERR-TRANSFER-PENDING (err u413))
+(define-constant ERR-NO-TRANSFER (err u414))
 
 (define-constant MAX-STORAGE-ENTRIES u10000)
 (define-constant STORAGE-COST-PER-BYTE u10)
@@ -84,6 +86,21 @@
 (define-map storage-access-grants
   { storage-id: uint, grantee: principal }
   { granted-by: principal, grant-block: uint, is-active: bool }
+)
+
+(define-map storage-transfer-proposals
+  { storage-id: uint }
+  { proposed-to: principal, proposed-by: principal, proposal-block: uint }
+)
+
+(define-map storage-ownership-history
+  { storage-id: uint, transfer-index: uint }
+  { from-owner: principal, to-owner: principal, transfer-block: uint }
+)
+
+(define-map storage-transfer-count
+  { storage-id: uint }
+  { count: uint }
 )
 
 (define-private (calculate-storage-cost (size uint) (is-compressed bool))
@@ -450,6 +467,62 @@
 
 (define-read-only (check-storage-access (storage-id uint) (user principal))
   (has-storage-access storage-id user))
+
+(define-public (propose-storage-transfer (storage-id uint) (new-owner principal))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND)))
+    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (not (is-eq new-owner tx-sender)) ERR-INVALID-INPUT)
+    (asserts! (is-none (map-get? storage-transfer-proposals { storage-id: storage-id })) ERR-TRANSFER-PENDING)
+    
+    (map-set storage-transfer-proposals
+      { storage-id: storage-id }
+      { proposed-to: new-owner, proposed-by: tx-sender, proposal-block: stacks-block-height })
+    
+    (ok true)))
+
+(define-public (accept-storage-transfer (storage-id uint))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND))
+        (proposal (unwrap! (map-get? storage-transfer-proposals { storage-id: storage-id }) ERR-NO-TRANSFER)))
+    (asserts! (is-eq (get proposed-to proposal) tx-sender) ERR-UNAUTHORIZED)
+    
+    (let ((old-owner (get owner entry))
+          (transfer-count-data (default-to { count: u0 } (map-get? storage-transfer-count { storage-id: storage-id })))
+          (new-count (+ (get count transfer-count-data) u1)))
+      
+      (map-set storage-entries
+        { storage-id: storage-id }
+        (merge entry { owner: tx-sender }))
+      
+      (map-set storage-ownership-history
+        { storage-id: storage-id, transfer-index: new-count }
+        { from-owner: old-owner, to-owner: tx-sender, transfer-block: stacks-block-height })
+      
+      (map-set storage-transfer-count
+        { storage-id: storage-id }
+        { count: new-count })
+      
+      (map-delete storage-transfer-proposals { storage-id: storage-id })
+      
+      (ok true))))
+
+(define-public (cancel-storage-transfer (storage-id uint))
+  (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND))
+        (proposal (unwrap! (map-get? storage-transfer-proposals { storage-id: storage-id }) ERR-NO-TRANSFER)))
+    (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (get proposed-by proposal) tx-sender) ERR-UNAUTHORIZED)
+    
+    (map-delete storage-transfer-proposals { storage-id: storage-id })
+    
+    (ok true)))
+
+(define-read-only (get-transfer-proposal (storage-id uint))
+  (map-get? storage-transfer-proposals { storage-id: storage-id }))
+
+(define-read-only (get-ownership-history (storage-id uint) (transfer-index uint))
+  (map-get? storage-ownership-history { storage-id: storage-id, transfer-index: transfer-index }))
+
+(define-read-only (get-transfer-count (storage-id uint))
+  (default-to { count: u0 } (map-get? storage-transfer-count { storage-id: storage-id })))
 
 (define-public (withdraw-fees)
   (begin

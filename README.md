@@ -14,6 +14,8 @@ A Clarity smart contract demonstrating gas optimization best practices for effic
 - **🧹 Cleanup Rewards**: Earn rewards for cleaning up expired storage
 - **🔐 Access Control**: Granular permissions for private, public, and shared storage
 - **👥 Multi-User Access**: Collaborative data sharing with permission management
+- **🔄 Ownership Transfer**: Secure two-step transfer mechanism with audit trails
+- **📜 Transfer History**: Complete ownership provenance tracking
 
 ## 🎯 Gas Optimization Techniques
 
@@ -39,6 +41,8 @@ Store data with compression, expiration, and access control.
 - **compress**: Enable compression (recommended for size > 1KB)
 - **expiration-blocks**: Number of blocks until expiration (0 = default)
 - **permission-type**: Access level (0=private, 1=public, 2=shared)
+
+Note: Storage entries can be transferred using the propose/accept transfer mechanism.
 
 #### `batch-store-data`
 ```clarity
@@ -94,6 +98,24 @@ Revoke access from shared storage (owner only).
 ```
 Update storage access permissions (owner only).
 
+#### `propose-storage-transfer`
+```clarity
+(propose-storage-transfer storage-id new-owner)
+```
+Propose ownership transfer to another principal (owner only).
+
+#### `accept-storage-transfer`
+```clarity
+(accept-storage-transfer storage-id)
+```
+Accept proposed ownership transfer (recipient only).
+
+#### `cancel-storage-transfer`
+```clarity
+(cancel-storage-transfer storage-id)
+```
+Cancel pending transfer proposal (owner only).
+
 ### 📈 Analytics Functions
 
 #### `get-user-stats`
@@ -145,6 +167,24 @@ Get expiration details for stored data.
 ```
 Calculate potential cleanup reward for expired storage.
 
+#### `get-transfer-proposal`
+```clarity
+(get-transfer-proposal storage-id)
+```
+Get pending transfer proposal details.
+
+#### `get-ownership-history`
+```clarity
+(get-ownership-history storage-id transfer-index)
+```
+Get historical ownership transfer record.
+
+#### `get-transfer-count`
+```clarity
+(get-transfer-count storage-id)
+```
+Get total number of ownership transfers.
+
 ## 💻 Usage Examples
 
 ### Basic Storage
@@ -176,6 +216,18 @@ Calculate potential cleanup reward for expired storage.
 
 ;; Check if user has access
 (contract-call? .gas-efficient-storage-app check-storage-access u123 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR)
+```
+
+### Ownership Transfer
+```clarity
+;; Propose transfer to new owner
+(contract-call? .gas-efficient-storage-app propose-storage-transfer u123 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR)
+
+;; Accept transfer (as recipient)
+(contract-call? .gas-efficient-storage-app accept-storage-transfer u123)
+
+;; View transfer history
+(contract-call? .gas-efficient-storage-app get-ownership-history u123 u1)
 ```
 
 ### Cleanup Expired Storage
