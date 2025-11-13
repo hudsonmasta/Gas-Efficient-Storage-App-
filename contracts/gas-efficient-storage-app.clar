@@ -103,6 +103,16 @@
   { count: uint }
 )
 
+(define-map prepaid-balances
+  { user: principal }
+  { balance: uint }
+)
+
+(define-map storage-spend-allowances
+  { owner: principal, spender: principal }
+  { allowance: uint }
+)
+
 (define-private (calculate-storage-cost (size uint) (is-compressed bool))
   (let ((base-cost (* size STORAGE-COST-PER-BYTE)))
     (if is-compressed
@@ -362,6 +372,140 @@
         (compress (get compress data-item)))
     (calculate-storage-cost (if compress (compress-data size) size) compress)))
 
+(define-public (deposit-storage-funds (amount uint))
+  (begin
+    (asserts! (> amount u0) ERR-INVALID-INPUT)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (let ((bal (match (map-get? prepaid-balances { user: tx-sender }) b (get balance b) u0))
+          (new-balance (+ bal amount)))
+      (map-set prepaid-balances { user: tx-sender } { balance: new-balance })
+      (ok new-balance))))
+
+(define-read-only (get-prepaid-balance (user principal))
+  (match (map-get? prepaid-balances { user: user })
+    bal (get balance bal)
+    u0))
+
+(define-public (approve-storage-spender (spender principal) (amount uint))
+  (begin
+    (map-set storage-spend-allowances { owner: tx-sender, spender: spender } { allowance: amount })
+    (ok true)))
+
+(define-public (revoke-storage-spender (spender principal))
+  (begin
+    (map-delete storage-spend-allowances { owner: tx-sender, spender: spender })
+    (ok true)))
+
+(define-read-only (get-storage-allowance (owner principal) (spender principal))
+  (match (map-get? storage-spend-allowances { owner: owner, spender: spender })
+    a (get allowance a)
+    u0))
+
+(define-public (store-data-using-prepaid (data-hash (buff 32)) (size uint) (compress bool) (expiration-blocks uint) (permission-type uint))
+  (let ((storage-id (+ (var-get storage-counter) u1))
+        (compressed-size (if compress (compress-data size) size))
+        (storage-cost (calculate-storage-cost compressed-size compress))
+        (balance-data (default-to { balance: u0 } (map-get? prepaid-balances { user: tx-sender }))))
+    (asserts! (< (var-get storage-counter) MAX-STORAGE-ENTRIES) ERR-STORAGE-FULL)
+    (asserts! (> size u0) ERR-INVALID-INPUT)
+    (asserts! (> expiration-blocks u0) ERR-INVALID-INPUT)
+    (asserts! (<= permission-type PERMISSION-SHARED) ERR-INVALID-INPUT)
+    (asserts! (>= (get balance balance-data) storage-cost) ERR-INSUFFICIENT-PAYMENT)
+
+    (map-set storage-entries 
+      { storage-id: storage-id }
+      {
+        owner: tx-sender,
+        data-hash: data-hash,
+        size: compressed-size,
+        timestamp: stacks-block-height,
+        access-count: u0,
+        is-compressed: compress,
+        expiration-block: (+ stacks-block-height (if (is-eq expiration-blocks u0) DEFAULT-EXPIRATION-BLOCKS expiration-blocks))
+      })
+
+    (begin
+      (if compress
+        (map-set compressed-data 
+          { data-hash: data-hash }
+          { compressed-size: compressed-size, original-size: size })
+        true))
+
+    (let ((user-entry-count (get-user-entry-count tx-sender)))
+      (map-set storage-index 
+        { owner: tx-sender, index: user-entry-count }
+        { storage-id: storage-id }))
+
+    (update-user-stats tx-sender compressed-size storage-cost)
+    (var-set storage-counter storage-id)
+    (var-set total-storage-used (+ (var-get total-storage-used) compressed-size))
+    (let ((cleanup-reward (/ (* storage-cost CLEANUP-REWARD-RATE) u100))
+          (net-contract-balance (- storage-cost cleanup-reward)))
+      (var-set contract-balance (+ (var-get contract-balance) net-contract-balance))
+      (var-set cleanup-rewards-pool (+ (var-get cleanup-rewards-pool) cleanup-reward)))
+
+    (map-set storage-permissions
+      { storage-id: storage-id }
+      { permission-type: permission-type, is-public: (is-eq permission-type PERMISSION-PUBLIC) })
+
+    (map-set prepaid-balances { user: tx-sender } { balance: (- (get balance balance-data) storage-cost) })
+
+    (ok storage-id)))
+
+(define-public (store-data-for (owner principal) (data-hash (buff 32)) (size uint) (compress bool) (expiration-blocks uint) (permission-type uint))
+  (let ((storage-id (+ (var-get storage-counter) u1))
+        (compressed-size (if compress (compress-data size) size))
+        (storage-cost (calculate-storage-cost compressed-size compress))
+        (balance-data (default-to { balance: u0 } (map-get? prepaid-balances { user: owner })))
+        (allowance-data (default-to { allowance: u0 } (map-get? storage-spend-allowances { owner: owner, spender: tx-sender }))))
+    (asserts! (< (var-get storage-counter) MAX-STORAGE-ENTRIES) ERR-STORAGE-FULL)
+    (asserts! (> size u0) ERR-INVALID-INPUT)
+    (asserts! (> expiration-blocks u0) ERR-INVALID-INPUT)
+    (asserts! (<= permission-type PERMISSION-SHARED) ERR-INVALID-INPUT)
+    (asserts! (>= (get balance balance-data) storage-cost) ERR-INSUFFICIENT-PAYMENT)
+    (asserts! (>= (get allowance allowance-data) storage-cost) ERR-UNAUTHORIZED)
+
+    (map-set storage-entries 
+      { storage-id: storage-id }
+      {
+        owner: owner,
+        data-hash: data-hash,
+        size: compressed-size,
+        timestamp: stacks-block-height,
+        access-count: u0,
+        is-compressed: compress,
+        expiration-block: (+ stacks-block-height (if (is-eq expiration-blocks u0) DEFAULT-EXPIRATION-BLOCKS expiration-blocks))
+      })
+
+    (begin
+      (if compress
+        (map-set compressed-data 
+          { data-hash: data-hash }
+          { compressed-size: compressed-size, original-size: size })
+        true))
+
+    (let ((user-entry-count (get-user-entry-count owner)))
+      (map-set storage-index 
+        { owner: owner, index: user-entry-count }
+        { storage-id: storage-id }))
+
+    (update-user-stats owner compressed-size storage-cost)
+    (var-set storage-counter storage-id)
+    (var-set total-storage-used (+ (var-get total-storage-used) compressed-size))
+    (let ((cleanup-reward (/ (* storage-cost CLEANUP-REWARD-RATE) u100))
+          (net-contract-balance (- storage-cost cleanup-reward)))
+      (var-set contract-balance (+ (var-get contract-balance) net-contract-balance))
+      (var-set cleanup-rewards-pool (+ (var-get cleanup-rewards-pool) cleanup-reward)))
+
+    (map-set storage-permissions
+      { storage-id: storage-id }
+      { permission-type: permission-type, is-public: (is-eq permission-type PERMISSION-PUBLIC) })
+
+    (map-set prepaid-balances { user: owner } { balance: (- (get balance balance-data) storage-cost) })
+    (map-set storage-spend-allowances { owner: owner, spender: tx-sender } { allowance: (- (get allowance allowance-data) storage-cost) })
+
+    (ok storage-id)))
+
 (define-public (extend-expiration (storage-id uint) (additional-blocks uint))
   (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND)))
     (asserts! (is-eq (get owner entry) tx-sender) ERR-UNAUTHORIZED)
@@ -420,11 +564,13 @@
     entry (/ (* (get size entry) CLEANUP-REWARD-RATE) u100)
     u0))
 
+
 (define-read-only (get-expired-claim-info (storage-id uint))
   (map-get? expired-storage-claims { storage-id: storage-id }))
 
 (define-read-only (get-cleanup-pool-balance)
   (var-get cleanup-rewards-pool))
+
 
 (define-public (grant-storage-access (storage-id uint) (grantee principal))
   (let ((entry (unwrap! (map-get? storage-entries { storage-id: storage-id }) ERR-NOT-FOUND))
