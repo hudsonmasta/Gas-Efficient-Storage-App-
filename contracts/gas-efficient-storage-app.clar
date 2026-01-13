@@ -386,6 +386,16 @@
     bal (get balance bal)
     u0))
 
+(define-public (withdraw-storage-funds (amount uint))
+  (let ((recipient tx-sender)
+        (bal (match (map-get? prepaid-balances { user: tx-sender }) b (get balance b) u0)))
+    (asserts! (> amount u0) ERR-INVALID-INPUT)
+    (asserts! (>= bal amount) ERR-INSUFFICIENT-PAYMENT)
+    (let ((new-balance (- bal amount)))
+      (map-set prepaid-balances { user: recipient } { balance: new-balance })
+      (try! (as-contract (stx-transfer? amount tx-sender recipient)))
+      (ok new-balance))))
+
 (define-public (approve-storage-spender (spender principal) (amount uint))
   (begin
     (map-set storage-spend-allowances { owner: tx-sender, spender: spender } { allowance: amount })
